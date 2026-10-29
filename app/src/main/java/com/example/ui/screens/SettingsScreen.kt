@@ -1,5 +1,12 @@
 package com.example.ui.screens
 
+import android.Manifest
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
+import android.content.pm.PackageManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -24,6 +31,17 @@ import com.example.viewmodel.MomentoViewModel
 @Composable
 fun SettingsScreen(viewModel: MomentoViewModel, onNavigateBack: () -> Unit) {
     var showClearDialog by remember { mutableStateOf(false) }
+    var refresh by remember { mutableIntStateOf(0) }
+    val prefs = remember { viewModel.notificationPreferences() }
+    val calendar = remember { viewModel.calendarIntegration() }
+    val context = LocalContext.current
+    val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { refresh++ }
+    val calendarPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
+        if (granted[Manifest.permission.READ_CALENDAR] == true && granted[Manifest.permission.WRITE_CALENDAR] == true) {
+            calendar.availableCalendars().firstOrNull()?.let(calendar::selectCalendar)
+        }
+        refresh++
+    }
 
     if (showClearDialog) {
         AlertDialog(
@@ -52,9 +70,32 @@ fun SettingsScreen(viewModel: MomentoViewModel, onNavigateBack: () -> Unit) {
             }
             item {
                 SettingsSection("Notifications") {
-                    SettingsInfoRow(Icons.Default.Notifications, "Task Reminders", "Enabled", MomentoTertiary)
-                    SettingsInfoRow(Icons.Default.Loop, "Habit Reminders", "Enabled", MomentoTertiary)
-                    SettingsInfoRow(Icons.Default.Event, "Event Alerts", "Enabled", MomentoTertiary)
+                    val enableNotifications: (String, Boolean) -> Unit = { category, enabled ->
+                        if (enabled && Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        viewModel.setNotificationEnabled(category, enabled); refresh++
+                    }
+                    SettingsSwitchRow(Icons.Default.Notifications, "Task Reminders", prefs.tasks, MomentoTertiary) { enableNotifications("tasks", it) }
+                    SettingsSwitchRow(Icons.Default.Loop, "Habit Reminders", prefs.habits, MomentoTertiary) { enableNotifications("habits", it) }
+                    SettingsSwitchRow(Icons.Default.Event, "Event Alerts", prefs.events, MomentoTertiary) { enableNotifications("events", it) }
+                    SettingsSwitchRow(Icons.Default.Flag, "Goal reminders", prefs.goals, MomentoTertiary) { enableNotifications("goals", it) }
+                    SettingsSwitchRow(Icons.Default.AccountBalanceWallet, "Expense limit alerts", prefs.expenses, MomentoTertiary) { enableNotifications("expenses", it) }
+                    SettingsActionRow(Icons.Default.Schedule, "Habit reminder time", "${prefs.habitHour}:00", MomentoTertiary) { prefs.habitHour = (prefs.habitHour + 1) % 24; refresh++ }
+                    SettingsActionRow(Icons.Default.Payments, "Monthly spending limit", if (prefs.expenseLimit > 0) "₹${prefs.expenseLimit.toInt()}" else "Not set", MomentoTertiary) { prefs.expenseLimit = if (prefs.expenseLimit > 0) 0f else 5000f; refresh++ }
+                }
+            }
+            item {
+                SettingsSection("Google Calendar") {
+                    val connected = calendar.isConnected
+                    SettingsInfoRow(Icons.Default.CalendarMonth, "Calendar", if (connected) "Connected: ${calendar.selectedCalendarName()}" else "Not connected", MomentoSecondary)
+                    SettingsActionRow(Icons.Default.Link, if (connected) "Choose calendar" else "Connect Calendar", "Uses your device's Google Calendar permission", MomentoSecondary) {
+                        if (!calendar.hasPermission()) calendarPermission.launch(arrayOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR))
+                        else calendar.availableCalendars().firstOrNull()?.let(calendar::selectCalendar)
+                        refresh++
+                    }
+                    if (connected) {
+                        SettingsActionRow(Icons.Default.Sync, "Sync Momento events", "Export and import calendar events", MomentoSecondary) { viewModel.syncLinkedEvents() }
+                        SettingsActionRow(Icons.Default.LinkOff, "Disconnect Calendar", "Keeps Momento events on this device", MomentoError) { calendar.disconnect(); refresh++ }
+                    }
                 }
             }
             item {
@@ -103,6 +144,15 @@ private fun SettingsInfoRow(icon: ImageVector, title: String, value: String, col
         Spacer(modifier = Modifier.width(12.dp))
         Text(title, color = MomentoOnSurface, modifier = Modifier.weight(1f), fontWeight = FontWeight.Medium)
         Text(value, color = MomentoOnSurfaceVariant, fontSize = 12.sp)
+    }
+}
+
+@Composable
+private fun SettingsSwitchRow(icon: ImageVector, title: String, checked: Boolean, color: Color, onCheckedChange: (Boolean) -> Unit) {
+    Row(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(modifier = Modifier.size(36.dp).clip(RoundedCornerShape(10.dp)).background(color.copy(alpha = 0.12f)), contentAlignment = Alignment.Center) { Icon(icon, null, tint = color, modifier = Modifier.size(18.dp)) }
+        Spacer(modifier = Modifier.width(12.dp)); Text(title, color = MomentoOnSurface, modifier = Modifier.weight(1f), fontWeight = FontWeight.Medium)
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
 

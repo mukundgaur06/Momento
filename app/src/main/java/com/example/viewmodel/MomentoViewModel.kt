@@ -18,6 +18,9 @@ import io.github.jan.supabase.postgrest.postgrest
 import kotlinx.serialization.Serializable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
+import com.example.calendar.CalendarIntegration
+import com.example.notifications.NotificationPreferences
+import com.example.notifications.ReminderScheduler
 
 class MomentoViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -29,8 +32,12 @@ class MomentoViewModel(application: Application) : AndroidViewModel(application)
         database.expenseDao(),
         database.habitDao(),
         database.noteDao(),
-        database.userProfileDao()
+        database.userProfileDao(),
+        database.calendarEventLinkDao()
     )
+    private val reminders = ReminderScheduler(application.applicationContext)
+    private val notificationPreferences = NotificationPreferences(application.applicationContext)
+    private val calendarIntegration = CalendarIntegration(application.applicationContext, database)
 
     // ── StateFlows ────────────────────────────────────────────────────────────
     val tasks: StateFlow<List<Task>> = repository.allTasks.stateIn(
@@ -146,28 +153,26 @@ class MomentoViewModel(application: Application) : AndroidViewModel(application)
         category: String = "Personal",
         dueDate: Long? = null
     ) = viewModelScope.launch {
-        repository.insertTask(
-            Task(
-                title = title,
-                description = description,
-                priority = priority,
-                category = category,
-                dueDate = dueDate,
-                isToday = true
-            )
+        val task = Task(
+            title = title, description = description, priority = priority, category = category,
+            dueDate = dueDate, isToday = true
         )
+        val id = repository.insertTask(
+            task
+        )
+        reminders.scheduleTask(task.copy(id = id.toInt()))
     }
 
     fun toggleTaskCompletion(task: Task) = viewModelScope.launch {
-        repository.updateTask(task.copy(isCompleted = !task.isCompleted))
+        val updated = task.copy(isCompleted = !task.isCompleted); repository.updateTask(updated); reminders.scheduleTask(updated)
     }
 
     fun deleteTask(task: Task) = viewModelScope.launch {
-        repository.deleteTask(task.id)
+        repository.deleteTask(task.id); reminders.cancel("task", task.id)
     }
 
     fun archiveTask(task: Task) = viewModelScope.launch {
-        repository.updateTask(task.copy(isArchived = true))
+        val updated = task.copy(isArchived = true); repository.updateTask(updated); reminders.scheduleTask(updated)
     }
 
     // ── Goal Operations ───────────────────────────────────────────────────────
@@ -177,14 +182,12 @@ class MomentoViewModel(application: Application) : AndroidViewModel(application)
         targetValue: Float = 100f,
         targetDateMillis: Long = System.currentTimeMillis() + 2592000000L
     ) = viewModelScope.launch {
-        repository.insertGoal(
-            Goal(
+        val goal = Goal(
                 title = title,
                 description = description,
                 targetValue = targetValue,
                 targetDateMillis = targetDateMillis
-            )
-        )
+        ); val id = repository.insertGoal(goal); reminders.scheduleGoal(goal.copy(id = id.toInt()))
     }
 
     fun updateGoalProgress(goal: Goal, newValue: Float) = viewModelScope.launch {
@@ -195,16 +198,15 @@ class MomentoViewModel(application: Application) : AndroidViewModel(application)
             newProgress < 0.3f && isDeadlineSoon(goal.targetDateMillis) -> Goal.GoalStatus.AT_RISK
             else -> Goal.GoalStatus.ON_TRACK
         }
-        repository.updateGoal(
-            goal.copy(
+        val updated = goal.copy(
                 currentValue = clamped,
                 progress = newProgress,
                 status = newStatus
-            )
-        )
+            ); repository.updateGoal(updated); reminders.scheduleGoal(updated)
+        if (goal.status != Goal.GoalStatus.COMPLETED && updated.status == Goal.GoalStatus.COMPLETED && notificationPreferences.goals) notifyGoalCompleted(updated)
     }
 
-    fun deleteGoal(goal: Goal) = viewModelScope.launch { repository.deleteGoal(goal.id) }
+    fun deleteGoal(goal: Goal) = viewModelScope.launch { repository.deleteGoal(goal.id); reminders.cancel("goal", goal.id) }
 
     private fun isDeadlineSoon(targetMillis: Long): Boolean {
         val daysLeft = (targetMillis - System.currentTimeMillis()) / 86400000L
@@ -220,34 +222,62 @@ class MomentoViewModel(application: Application) : AndroidViewModel(application)
         location: String = "",
         color: String = "#6366F1"
     ) = viewModelScope.launch {
-        repository.insertEvent(
-            Event(
+        val event = Event(
                 title = title,
                 timeMillis = timeMillis,
                 category = category,
                 description = description,
                 location = location.ifBlank { null },
                 color = color
-            )
-        )
+            ); val id = repository.insertEvent(event); val saved = event.copy(id = id.toInt()); reminders.scheduleEvent(saved); if (calendarIntegration.isConnected) calendarIntegration.export(saved)
     }
 
-    fun deleteEvent(event: Event) = viewModelScope.launch { repository.deleteEvent(event.id) }
+    fun deleteEvent(event: Event) = viewModelScope.launch { calendarIntegration.deleteLinked(event.id); repository.deleteEvent(event.id); reminders.cancel("event", event.id) }
 
     // ── Expense Operations ────────────────────────────────────────────────────
     fun addExpense(title: String, amount: Double, category: String) = viewModelScope.launch {
-        repository.insertExpense(
-            Expense(
+        val expense = Expense(
                 title = title,
                 amount = amount,
                 dateMillis = System.currentTimeMillis(),
                 category = category
-            )
-        )
+            ); repository.insertExpense(expense); checkExpenseThreshold()
     }
 
     fun deleteExpense(expense: Expense) = viewModelScope.launch {
-        repository.deleteExpense(expense.id)
+        repository.deleteExpense(expense.id); notificationPreferences.clearExpenseNotification()
+    }
+
+    private fun checkExpenseThreshold() {
+        if (!notificationPreferences.expenses || notificationPreferences.expenseLimit <= 0f) return
+        val month = SimpleDateFormat("yyyy-MM", Locale.US).format(Date())
+        if (notificationPreferences.expenseNotifiedMonth() == month) return
+        val start = Calendar.getInstance().apply { set(Calendar.DAY_OF_MONTH, 1); set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0) }.timeInMillis
+        if (expenses.value.filter { it.dateMillis >= start }.sumOf { it.amount } >= notificationPreferences.expenseLimit) {
+            reminders.notifyExpenseThreshold(); notificationPreferences.markExpenseNotified(month)
+        }
+    }
+
+    fun notificationPreferences() = notificationPreferences
+    fun setNotificationEnabled(category: String, enabled: Boolean) = viewModelScope.launch {
+        when (category) {
+            "tasks" -> { notificationPreferences.tasks = enabled; if (enabled) tasks.value.forEach(reminders::scheduleTask) else reminders.cancelCategory("task", tasks.value.map { it.id }) }
+            "events" -> { notificationPreferences.events = enabled; if (enabled) events.value.forEach(reminders::scheduleEvent) else reminders.cancelCategory("event", events.value.map { it.id }) }
+            "goals" -> { notificationPreferences.goals = enabled; if (enabled) goals.value.forEach(reminders::scheduleGoal) else reminders.cancelCategory("goal", goals.value.map { it.id }) }
+            "habits" -> { notificationPreferences.habits = enabled; if (enabled) habits.value.forEach(reminders::scheduleHabit) else reminders.cancelCategory("habit", habits.value.map { it.id }) }
+            "expenses" -> notificationPreferences.expenses = enabled
+        }
+    }
+    fun calendarIntegration() = calendarIntegration
+    fun syncLinkedEvents() = viewModelScope.launch {
+        events.value.forEach { calendarIntegration.export(it) }
+        calendarIntegration.importEvents()
+    }
+    private fun notifyGoalCompleted(goal: Goal) {
+        com.example.notifications.ReminderReceiver().onReceive(getApplication(), android.content.Intent(getApplication(), com.example.notifications.ReminderReceiver::class.java).apply {
+            putExtra(com.example.notifications.ReminderReceiver.EXTRA_CHANNEL, "GOAL_UPDATES"); putExtra(com.example.notifications.ReminderReceiver.EXTRA_ID, "goal-complete-${goal.id}".hashCode())
+            putExtra(com.example.notifications.ReminderReceiver.EXTRA_TITLE, "Goal completed"); putExtra(com.example.notifications.ReminderReceiver.EXTRA_TEXT, goal.title)
+        })
     }
 
     // ── Habit Operations ──────────────────────────────────────────────────────
@@ -258,15 +288,13 @@ class MomentoViewModel(application: Application) : AndroidViewModel(application)
         color: String = "#6366F1",
         icon: String = "star"
     ) = viewModelScope.launch {
-        repository.insertHabit(
-            Habit(
+        val habit = Habit(
                 name = name,
                 description = description,
                 frequency = frequency,
                 color = color,
                 icon = icon
-            )
-        )
+            ); val id = repository.insertHabit(habit); reminders.scheduleHabit(habit.copy(id = id.toInt()))
     }
 
     fun toggleHabitForToday(habit: Habit) = viewModelScope.launch {
@@ -280,16 +308,14 @@ class MomentoViewModel(application: Application) : AndroidViewModel(application)
         val sorted = dates.sorted()
         val current = calculateCurrentStreak(sorted)
         val longest = maxOf(habit.longestStreak, current)
-        repository.updateHabit(
-            habit.copy(
+        val updated = habit.copy(
                 completedDates = Json.encodeToString(sorted),
                 currentStreak = current,
                 longestStreak = longest
-            )
-        )
+            ); repository.updateHabit(updated); reminders.scheduleHabit(updated)
     }
 
-    fun deleteHabit(habit: Habit) = viewModelScope.launch { repository.deleteHabit(habit.id) }
+    fun deleteHabit(habit: Habit) = viewModelScope.launch { repository.deleteHabit(habit.id); reminders.cancel("habit", habit.id) }
 
     fun isHabitCompletedToday(habit: Habit): Boolean {
         val today = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())

@@ -12,7 +12,7 @@ interface TaskDao {
     fun getArchivedTasks(): Flow<List<Task>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertTask(task: Task)
+    suspend fun insertTask(task: Task): Long
 
     @Update
     suspend fun updateTask(task: Task)
@@ -27,7 +27,7 @@ interface GoalDao {
     fun getAllGoals(): Flow<List<Goal>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertGoal(goal: Goal)
+    suspend fun insertGoal(goal: Goal): Long
 
     @Update
     suspend fun updateGoal(goal: Goal)
@@ -42,13 +42,28 @@ interface EventDao {
     fun getAllEvents(): Flow<List<Event>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertEvent(event: Event)
+    suspend fun insertEvent(event: Event): Long
 
     @Update
     suspend fun updateEvent(event: Event)
 
     @Query("DELETE FROM events WHERE id = :id")
     suspend fun deleteEventById(id: Int)
+}
+
+@Dao
+interface CalendarEventLinkDao {
+    @Query("SELECT * FROM calendar_event_links WHERE localEventId = :localId")
+    suspend fun getByLocalId(localId: Int): CalendarEventLink?
+
+    @Query("SELECT * FROM calendar_event_links WHERE providerEventId = :providerId")
+    suspend fun getByProviderId(providerId: Long): CalendarEventLink?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(link: CalendarEventLink)
+
+    @Query("DELETE FROM calendar_event_links WHERE localEventId = :localId")
+    suspend fun deleteByLocalId(localId: Int)
 }
 
 @Dao
@@ -69,7 +84,7 @@ interface HabitDao {
     fun getAllHabits(): Flow<List<Habit>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertHabit(habit: Habit)
+    suspend fun insertHabit(habit: Habit): Long
 
     @Update
     suspend fun updateHabit(habit: Habit)

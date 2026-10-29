@@ -9,7 +9,8 @@ class MomentoRepository(
     private val expenseDao: ExpenseDao,
     private val habitDao: HabitDao,
     private val noteDao: NoteDao,
-    private val userProfileDao: UserProfileDao
+    private val userProfileDao: UserProfileDao,
+    val calendarEventLinkDao: CalendarEventLinkDao
 ) {
     // Streams
     val allTasks: Flow<List<Task>> = taskDao.getAllTasks()

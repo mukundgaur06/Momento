@@ -4,11 +4,16 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
+import com.example.notifications.RescheduleReceiver
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 class MomentoApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannels()
+        CoroutineScope(Dispatchers.IO).launch { RescheduleReceiver.reconcile(applicationContext) }
     }
 
     private fun createNotificationChannels() {
@@ -18,7 +23,8 @@ class MomentoApplication : Application() {
                 NotificationChannel("TASK_REMINDERS",  "Task Reminders",  NotificationManager.IMPORTANCE_HIGH).apply { description = "Task deadline and reminder notifications" },
                 NotificationChannel("HABIT_REMINDERS", "Habit Reminders", NotificationManager.IMPORTANCE_DEFAULT).apply { description = "Daily habit check-in prompts" },
                 NotificationChannel("EVENT_ALERTS",    "Event Alerts",    NotificationManager.IMPORTANCE_HIGH).apply { description = "Upcoming event notifications" },
-                NotificationChannel("GOAL_UPDATES",    "Goal Updates",    NotificationManager.IMPORTANCE_LOW).apply { description = "Goal milestone and progress updates" }
+                NotificationChannel("GOAL_UPDATES",    "Goal Updates",    NotificationManager.IMPORTANCE_LOW).apply { description = "Goal milestone and progress updates" },
+                NotificationChannel("EXPENSE_ALERTS", "Expense Alerts", NotificationManager.IMPORTANCE_DEFAULT).apply { description = "Monthly spending-limit alerts" }
             ).forEach { manager.createNotificationChannel(it) }
         }
     }

@@ -55,6 +55,15 @@ data class Event(
     val reminderMinutes: Int = 0
 )
 
+/** Maps only events created or imported by Momento; it never claims unrelated calendar rows. */
+@Entity(tableName = "calendar_event_links", indices = [androidx.room.Index(value = ["providerEventId"], unique = true)])
+data class CalendarEventLink(
+    @PrimaryKey val localEventId: Int,
+    val providerEventId: Long,
+    val calendarId: Long,
+    val lastSyncedAt: Long = System.currentTimeMillis()
+)
+
 @Serializable
 @Entity(tableName = "expenses")
 data class Expense(
